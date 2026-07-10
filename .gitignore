@@ -1,0 +1,17 @@
+
+data/
+checkpoints/
+book_embeddings/
+rutracker/
+old_ver/
+*.inpx
+*.7z
+*.zip
+main.ipynb
+
+__pycache__/
+*.pyc
+
+.ipynb_checkpoints/
+.vscode/
+.idea/
