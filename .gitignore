@@ -8,6 +8,7 @@ old_ver/
 *.7z
 *.zip
 main.ipynb
+ans.txt
 
 __pycache__/
 *.pyc
