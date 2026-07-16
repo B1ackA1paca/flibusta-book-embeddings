@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from tqdm import tqdm
 from src.data_prep import read_fb2
+from torch.nn.utils.rnn import pad_sequence
 
 class TrainDataset():
     def __init__(self, checkpoints_df, tokenizer, k_chunks=64):
@@ -39,6 +40,38 @@ class TrainDataset():
         )
         return emb_tensor, tokens["input_ids"], tokens["attention_mask"]
 
-def collate_fn(batch):
+def train_collate_fn(batch):
     emb, input_ids, attention_mask = batch[0]
     return emb.unsqueeze(0), input_ids, attention_mask
+
+class TestDataset():
+    def __init__(self, data, tokenizer, k_chunks=64):
+        self.data = data
+        self.tokenizer = tokenizer
+        self.k_chunks = k_chunks
+        self.rng = np.random.default_rng()
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, i):
+        path = f"/data/flibusta/data/{self.data.loc[i, "archive"]}/{self.data.loc[i, "file_number"]}.fb2"
+        text_list = np.array(read_fb2(path))
+        if len(text_list) < self.k_chunks:
+            sampled_text = text_list.tolist()
+        else:
+            indices = self.rng.choice(len(text_list), size=self.k_chunks, replace=False, shuffle=False)
+            sampled_text = text_list[indices].tolist()
+        tokens = self.tokenizer(
+            sampled_text,
+            truncation=True,
+            max_length=448,
+            add_special_tokens=True,
+            padding='max_length',
+            return_tensors="pt"
+        )
+        return tokens["input_ids"], tokens["attention_mask"], self.data.loc[i, "flibusta_id"]
+
+def test_collate_fn(batch):
+    input_ids, attention_mask, flibusta_id = batch[0]
+    return input_ids, attention_mask, flibusta_id

@@ -10,6 +10,7 @@ old_ver/
 *.zip
 main.ipynb
 ans.txt
+*db
 
 __pycache__/
 *.pyc

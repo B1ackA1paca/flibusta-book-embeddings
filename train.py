@@ -154,6 +154,7 @@ def main():
     print("end, load weights")
     if best_metric > -1:
         model.load_state_dict(best_parameters)
+    torch.save(model.state_dict(), f"model_checkpoints/best_model.pth")
 
 if __name__ == "__main__":
     main()

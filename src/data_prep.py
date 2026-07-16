@@ -3,9 +3,10 @@ import json
 import re
 import zipfile
 import pandas as pd
+import numpy as np
 
-def get_checkpoints_df(inpx_path="/data/flibusta/data/fb2.flibusta.lib.rus.ec.7z.inpx", folder="checkpoints"):
-    summarize_matrix = []
+def get_data_df(inpx_path="/data/flibusta/data/fb2.flibusta.lib.rus.ec.7z.inpx"):
+    summarize_matrix = []   
     with zipfile.ZipFile(inpx_path) as z:
         for name in z.namelist():
             if name.endswith('.inp'):
@@ -25,6 +26,12 @@ def get_checkpoints_df(inpx_path="/data/flibusta/data/fb2.flibusta.lib.rus.ec.7z
 
     data_df = summarize_df[(summarize_df.isna().sum(axis=1) <= 10)].reset_index(drop=True)
     data_df = data_df[(data_df["format"] == "fb2") & (data_df["site"] == "Flibusta")].reset_index(drop=True)
+    data_df = data_df[("/data/flibusta/data/" + data_df['archive'] + '/' + data_df['file_number'] + ".fb2").map(os.path.exists)].reset_index(drop=True)
+
+    return data_df
+
+def get_checkpoints_df(inpx_path="/data/flibusta/data/fb2.flibusta.lib.rus.ec.7z.inpx", folder="checkpoints"):
+    data_df = get_data_df()
 
     data = []
     for file in os.listdir(folder):
@@ -34,6 +41,13 @@ def get_checkpoints_df(inpx_path="/data/flibusta/data/fb2.flibusta.lib.rus.ec.7z
 
     checkpoints_df = pd.DataFrame(data).rename(columns={"book_id": "file_number"}).merge(data_df[["file_number", "archive"]], on="file_number")
     return checkpoints_df
+
+def get_genres(data_df, genre_column="genre"):
+    arr = data_df[genre_column].str.split(":").values
+    ans = []
+    for lst in arr:
+        ans += lst
+    return np.unique(np.array(ans))[1:]
 
 def read_fb2(path):
     with open(path, 'r', encoding='utf-8', errors='ignore') as f:
