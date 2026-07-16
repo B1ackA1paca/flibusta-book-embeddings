@@ -4,9 +4,11 @@ from transformers import AutoModel
 from peft import LoraConfig, get_peft_model, TaskType
 
 class BookSummarizer(nn.Module):
-    def __init__(self, hidden_dim=768, num_layers=2, nhead=8):
+    def __init__(self, hidden_dim=768, num_layers=2, nhead=8, max_chunks=100):
         super().__init__()
         self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        self.pos_embedding = nn.Parameter(torch.zeros(1, max_chunks, hidden_dim))
+        
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
             nhead=nhead,
@@ -18,8 +20,12 @@ class BookSummarizer(nn.Module):
 
     def forward(self, chunk_embeddings):
         batch_size = chunk_embeddings.size(0)
+        seq_len = chunk_embeddings.size(1)
+        chunk_embeddings = chunk_embeddings + self.pos_embedding[:, :seq_len, :]
+        
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)
         x = torch.cat((cls_tokens, chunk_embeddings), dim=1)
+        
         output = self.transformer(x)
         return output[:, 0]
 
@@ -35,6 +41,7 @@ class FullBookEncoder(nn.Module):
             lora_dropout=0.1
         )
         self.gte_lora = get_peft_model(base_model, peft_config)
+        self.gte_lora.enable_input_require_grads()
         self.gte_lora.gradient_checkpointing_enable() 
         self.summarizer = BookSummarizer(hidden_dim=hidden_dim)
 
