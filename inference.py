@@ -18,12 +18,26 @@ from src.models import FullBookEncoder
 from src.dataset import TestDataset, test_collate_fn
 
 from src.data_prep import get_genres, get_data_df
+import warnings
+warnings.filterwarnings("ignore")
+
+import multiprocessing as mp
+try:
+    mp.set_start_method('fork', force=True)
+except RuntimeWarning:
+    print("runtime warning")
 
 db_name = "books_embeddings.db"
-conn = sqlite3.connect(db_name, check_same_thread=False)
+conn = sqlite3.connect(db_name)
 cursor = conn.cursor()
+
+cursor.execute("PRAGMA journal_mode=WAL")
+cursor.execute("PRAGMA synchronous=NORMAL")     
+cursor.execute("PRAGMA temp_store=MEMORY")
+
 cursor.execute("CREATE TABLE IF NOT EXISTS embeddings (flibusta_id TEXT PRIMARY KEY, vector BLOB)")
 conn.commit()
+conn.close()
 
 data_df = get_data_df()
 
@@ -41,13 +55,21 @@ fantastic_genres = ['adventure_fantasy', 'asian_fantasy', 'child_sf', 'child_sf_
 
 mask = data_df['genre'].str.contains(f'(?:^|:)({"|".join(fantastic_genres)})(?=:|$)')
 filtered_df = data_df[mask].reset_index(drop=True)
+# filtered_df = data_df.reset_index(drop=True)
+
+conn = sqlite3.connect(db_name)
+cursor = conn.cursor()
+cursor.execute("SELECT flibusta_id FROM embeddings")
+saved_ids = {str(row[0]) for row in cursor.fetchall()}
+conn.close()
+
+filtered_df = filtered_df[~filtered_df['flibusta_id'].astype(str).isin(saved_ids)].reset_index(drop=True)
 
 device = ("cuda" if torch.cuda.is_available() else "cpu")
 tokenizer = AutoTokenizer.from_pretrained("Alibaba-NLP/gte-multilingual-base", trust_remote_code=True)
 
-test_loader = DataLoader(TestDataset(filtered_df, tokenizer), batch_size=1, shuffle=False, collate_fn=test_collate_fn, pin_memory=True)
-
-# executor = ThreadPoolExecutor(max_workers=1)
+test_loader = DataLoader(TestDataset(filtered_df, tokenizer), batch_size=1, shuffle=False, collate_fn=test_collate_fn, pin_memory=True, num_workers=5, prefetch_factor=3)
+executor = ThreadPoolExecutor(max_workers=1)
 
 def save_batch_to_db(flibusta_ids, vectors):
     conn = sqlite3.connect(db_name)
@@ -74,6 +96,9 @@ model.load_state_dict(state_dict, strict=False)
 model = model.to(device)
 model = torch.compile(model)
 model.eval()
+
+step = 0
+
 with torch.inference_mode():
     for input_ids, attention_mask, flibusta_ids in tqdm(test_loader):
         input_ids = input_ids.to(device)
@@ -81,10 +106,10 @@ with torch.inference_mode():
         with torch.amp.autocast("cuda"):
             pred_emb = model(chunk_input_ids=input_ids, chunk_attention_mask=attention_mask)
         embeddings_np = pred_emb.cpu().numpy()
-        save_batch_to_db(flibusta_ids, embeddings_np)
-        # executor.submit(save_batch_to_db, flibusta_ids, embeddings_np)
+        executor.submit(save_batch_to_db, flibusta_ids, embeddings_np)
+        if executor._work_queue.qsize() > 500:
+            while executor._work_queue.qsize() > 50:
+                time.sleep(0.005)
 
-        # if executor._work_queue.qsize() > 300:
-        #     time.sleep(0.1)
-# executor.shutdown(wait=True)
+executor.shutdown(wait=True)
 print("all good, stop")

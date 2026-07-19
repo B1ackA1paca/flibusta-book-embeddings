@@ -57,7 +57,9 @@ class TestDataset():
     def __getitem__(self, i):
         path = f"/data/flibusta/data/{self.data.loc[i, "archive"]}/{self.data.loc[i, "file_number"]}.fb2"
         text_list = np.array(read_fb2(path))
-        if len(text_list) < self.k_chunks:
+        if len(text_list) == 0:
+            sampled_text = ["нечитаемо"]
+        elif len(text_list) < self.k_chunks:
             sampled_text = text_list.tolist()
         else:
             indices = self.rng.choice(len(text_list), size=self.k_chunks, replace=False, shuffle=False)
@@ -74,4 +76,4 @@ class TestDataset():
 
 def test_collate_fn(batch):
     input_ids, attention_mask, flibusta_id = batch[0]
-    return input_ids, attention_mask, flibusta_id
+    return input_ids, attention_mask, [str(flibusta_id)]

@@ -27,6 +27,18 @@ def get_data_df(inpx_path="/data/flibusta/data/fb2.flibusta.lib.rus.ec.7z.inpx")
     data_df = summarize_df[(summarize_df.isna().sum(axis=1) <= 10)].reset_index(drop=True)
     data_df = data_df[(data_df["format"] == "fb2") & (data_df["site"] == "Flibusta")].reset_index(drop=True)
     data_df = data_df[("/data/flibusta/data/" + data_df['archive'] + '/' + data_df['file_number'] + ".fb2").map(os.path.exists)].reset_index(drop=True)
+    data_df["size_in_bites"] = pd.to_numeric(data_df["size_in_bites"], errors="coerce")
+    data_df = data_df[data_df["size_in_bites"] > 100_000]
+    data_df['flibusta_id'] = data_df['flibusta_id'].astype(str).str.strip()
+    data_df = data_df[
+        (data_df['flibusta_id'] != "") & 
+        (data_df['flibusta_id'] != "0") & 
+        (data_df['flibusta_id'] != "nan") & 
+        (data_df['flibusta_id'] != "None") &
+        (data_df['flibusta_id'].notna())
+    ].reset_index(drop=True)
+
+    data_df = data_df[~data_df["flibusta_id"].duplicated(keep="first")].reset_index(drop=True)
 
     return data_df
 
