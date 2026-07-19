@@ -11,6 +11,7 @@ old_ver/
 main.ipynb
 ans.txt
 *db
+vector_database/
 
 __pycache__/
 *.pyc
