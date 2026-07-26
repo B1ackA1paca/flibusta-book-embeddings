@@ -3,6 +3,54 @@ import torch.nn as nn
 from transformers import AutoModel
 from peft import LoraConfig, get_peft_model, TaskType
 
+class Router(nn.Module):
+    def __init__(self, hidden_dim=768, rang=8, k=5, total_budget=32):
+        super().__init__()
+        self.k = k
+        self.total_budget = total_budget
+
+        self.proj_q = nn.Linear(hidden_dim, rang)
+        self.proj_k = nn.Linear(hidden_dim, rang)
+
+        self.v1 = nn.Parameter(torch.randn(rang, 1))
+        self.v2 = nn.Parameter(torch.randn(rang, 1))
+
+        nn.init.kaiming_uniform_(self.v1)
+        nn.init.kaiming_uniform_(self.v2)
+
+        self.out_layer = nn.Softmax(dim=-1)
+    def forward(self, x, mask):
+        # x = [n_batchs. max_seq_len, 768]
+        # mask = [n_batchs, max_seq_len]
+        q = self.proj_q(x)
+        k = self.proj_k(x)
+
+        mask = mask.unsqueeze(-1).to(x.dtype) # [n_batchs, max_seq_len, 1]
+
+        q = q * mask
+        k = k * mask
+
+        matrix_p = torch.bmm(q.transpose(1, 2), k)
+        real_len = mask.sum(dim=1, keepdim=True).clamp(min=1) # [N, 1, 1]
+
+        matrix_p /= real_len
+
+        out = torch.matmul(matrix_p, self.v1).squeeze(-1) # [n_batchs, rang]
+        scores = torch.matmul(out, self.v2).squeeze(-1) # [n_batchs]
+
+        sorted_idx = torch.argsort(scores, descending=True)
+        top_k_idx = sorted_idx[:self.k]
+        other_idx = sorted_idx[self.k:]
+
+        rand_idx = other_idx[torch.randperm(len(other_idx), device=x.device)[:self.total_budget - self.k]]
+
+        indices, _ = torch.sort(torch.cat([top_k_idx, rand_idx]))
+
+        weights = torch.softmax(scores[indices], dim=-1).unsqueeze(-1).unsqueeze(-1)
+        filtered_x = x[indices] * weights
+
+        return filtered_x, indices
+
 class BookSummarizer(nn.Module):
     def __init__(self, hidden_dim=768, num_layers=2, nhead=8, max_chunks=100):
         super().__init__()
@@ -43,6 +91,7 @@ class FullBookEncoder(nn.Module):
         self.gte_lora = get_peft_model(base_model, peft_config)
         self.gte_lora.enable_input_require_grads()
         self.gte_lora.gradient_checkpointing_enable() 
+        self.router = Router(hidden_dim=hidden_dim)
         self.summarizer = BookSummarizer(hidden_dim=hidden_dim)
 
     def forward(self, chunk_input_ids, chunk_attention_mask):

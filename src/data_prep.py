@@ -4,6 +4,7 @@ import re
 import zipfile
 import pandas as pd
 import numpy as np
+from lxml import html
 
 def get_data_df(inpx_path="/data/flibusta/data/fb2.flibusta.lib.rus.ec.7z.inpx"):
     summarize_matrix = []   
@@ -34,7 +35,10 @@ def get_data_df(inpx_path="/data/flibusta/data/fb2.flibusta.lib.rus.ec.7z.inpx")
         (data_df["format"] == "fb2") & 
         (data_df["site"] == "Flibusta") & 
         (data_df["size_in_bites"] > 100_000) & 
-        (data_df["flag_del"] == 0)
+        (data_df["size_in_bites"] < 600_000) & 
+        (data_df["flag_del"] == 0) &
+        (data_df["lang"] == "ru")
+
     ]
     data_df = data_df[("/data/flibusta/data/" + data_df['archive'] + '/' + data_df['file_number'] + ".fb2").map(os.path.exists)]
     data_df['flibusta_id'] = data_df['flibusta_id'].astype(str).str.strip()
@@ -68,14 +72,12 @@ def get_genres(data_df, genre_column="genre"):
         ans += lst
     return np.unique(np.array(ans))[1:]
 
-def read_fb2(path):
-    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-        text = f.read()
-        
-    annot = re.findall(r'<annotation>(.*?)</annotation>', text, re.S)
-    sections = re.findall(r'<section>(.*?)</section>', text, re.S)
+def load_book_text(path):
+    return html.fromstring(open(f"{path}", 'rb').read()).xpath('string(//body)').replace('\xa0', ' ')
     
-    return [re.sub(r'</?[a-zA-Z][^>]*>', '', chunk).strip() for chunk in (annot + sections) if chunk]
+def read_fb2_paragraphs(path):
+    full_text = load_book_text(path)
+    return [p.strip() for p in full_text.split('\n') if p.strip()]
 
 def clean_text(text):
     text = re.sub(r'</?[a-zA-Z][^>]*>', '', text)
