@@ -1,34 +1,42 @@
 import torch
 import numpy as np
 from tqdm import tqdm
-from src.data_prep import read_fb2
+from src.data_prep import load_book_text
 from torch.nn.utils.rnn import pad_sequence
 
 class TrainDataset():
-    def __init__(self, checkpoints_df, tokenizer, k_chunks=64):
+    def __init__(self, checkpoints_df, tokenizer, k_chunks=256, is_train=True):
         self.checkpoints_df = checkpoints_df.reset_index(drop=True)
         self.k_chunks = k_chunks
         self.tokenizer = tokenizer
+        self.is_train = is_train
         self.rng = np.random.default_rng()
         
         self.cached_books = {}
         for i, row in tqdm(self.checkpoints_df.iterrows(), total=len(self.checkpoints_df), desc="Caching books"):
             path = f"data/{row['archive']}/{row['file_number']}.fb2"
-            self.cached_books[i] = np.array(read_fb2(path), dtype=object)
+            self.cached_books[i] = np.array(load_book_text(path), dtype=object)
 
     def __len__(self):
         return self.checkpoints_df.shape[0]
 
     def __getitem__(self, i):
-        embedding = np.load(f"book_embeddings/book_{self.checkpoints_df.loc[i, 'file_number']}.npy")
+        file_num = self.checkpoints_df.loc[i, 'file_number']
+        embedding = np.load(f"book_embeddings/book_{file_num}.npy")
         emb_tensor = torch.tensor(embedding, dtype=torch.float16)
 
         text_list = self.cached_books[i]
-        if len(text_list) < self.k_chunks:
-            sampled_text = text_list.tolist()
+        n_total = len(text_list)
+        if n_total < self.k_chunks:
+            indices = np.arange(n_total)
+        elif self.is_train:
+            indices = self.rng.choice(n_total, size=self.k_chunks, replace=False)
         else:
-            indices = self.rng.choice(len(text_list), size=self.k_chunks, replace=False, shuffle=False)
-            sampled_text = text_list[indices].tolist()
+            val_rng = np.random.default_rng(seed=int(file_num))
+            indices = val_rng.choice(n_total, size=self.k_chunks, replace=False)
+
+        indices = np.sort(indices)
+        sampled_text = text_list[indices].tolist()
         
         tokens = self.tokenizer(
             sampled_text,
@@ -49,21 +57,24 @@ class TestDataset():
         self.data = data
         self.tokenizer = tokenizer
         self.k_chunks = k_chunks
-        self.rng = np.random.default_rng()
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, i):
-        path = f"/data/flibusta/data/{self.data.loc[i, "archive"]}/{self.data.loc[i, "file_number"]}.fb2"
-        text_list = np.array(read_fb2(path))
-        if len(text_list) == 0:
-            sampled_text = ["нечитаемо"]
-        elif len(text_list) < self.k_chunks:
-            sampled_text = text_list.tolist()
+        file_num = self.data.loc[i, 'file_number']
+        path = f"/data/flibusta/data/{self.data.loc[i, "archive"]}/{file_num}.fb2"
+        text_list = np.array(load_book_text(path))
+        n_total = len(text_list)
+        if n_total < self.k_chunks:
+            indices = np.arange(n_total)
         else:
-            indices = self.rng.choice(len(text_list), size=self.k_chunks, replace=False, shuffle=False)
-            sampled_text = text_list[indices].tolist()
+            rng = np.random.default_rng(seed=int(file_num))
+            indices = rng.choice(n_total, size=self.k_chunks, replace=False)
+
+        indices = np.sort(indices)
+        sampled_text = text_list[indices].tolist()
+        
         tokens = self.tokenizer(
             sampled_text,
             truncation=True,

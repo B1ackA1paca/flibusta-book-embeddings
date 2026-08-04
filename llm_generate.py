@@ -4,143 +4,143 @@ os.environ["CUDA_HOME"] = "/opt/cuda"
 os.environ["PATH"] = "/opt/cuda/bin:" + os.environ.get("PATH", "")
 
 import json
-import pandas as pd
+from tqdm import tqdm
 from pydantic import BaseModel, Field
 from vllm import LLM, SamplingParams
 from vllm.sampling_params import StructuredOutputsParams
-from tqdm import tqdm
+from typing import List, Optional
+
+from langchain_text_splitters import TokenTextSplitter
+
 from src.data_prep import get_data_df, load_book_text
-from json_repair import repair_json
 
-class BookAnalysis(BaseModel):
-    main_character: str = Field(description="Подробный психотип, внешность, мотивация и поведение ключевого персонажа на РУССКОМ ЯЗЫКЕ (минимум 4 предложения). СТРОГО ЗАПРЕЩЕНО указывать любые имена, фамилии, прозвища или титулы.")
-    setting: str = Field(description="Детальное описание мира, локаций, эпохи и атмосферы на РУССКОМ ЯЗЫКЕ (минимум 4 предложения). СТРОГО ЗАПРЕЩЕНО использовать любые собственные имена, названия городов, стран, планет или организаций.")
-    plot_line: str = Field(description="Подробная сюжетная линия с ключевыми событиями на РУССКОМ ЯЗЫКЕ (минимум 4 предложения). СТРОГО ЗАПРЕЩЕНО упоминать любые имена персонажей и собственные названия.")
-    reflection_depth: int = Field(description="Глубина размышлений от 0 до 10.")
-    attitude_toward_mc: str = Field(description="Развернутое описание отношения окружающих к персонажу на РУССКОМ ЯЗЫКЕ (минимум 3 предложения). СТРОГО ЗАПРЕЩЕНО использовать имена и названия.")
+class Character(BaseModel):
+    name: str = Field(
+        description="Имя персонажа, прозвище, если таких нет, то роль. если есть несколько возможных укажи через запятую"
+    )
+    character: str = Field(
+        description="Описание характера, внешности персонажа. максимально кратко не придумывай от себя. если персонаж использует магию, или какие-то способности опиши их"
+    )
+    impression: str = Field(
+        description="Впечатление, которое он оказывает на окружающих. важно отметить, если все в шоке от персонажа. не более 2 предложений. важно именно через запятую написать какие эмоции он вызывет у всех(шок, радость, удивление)"
+    )
 
-llm = LLM(
-    model="Qwen/Qwen3-4B-AWQ",
-    gpu_memory_utilization=0.9,
-    max_model_len=6400,
-    enforce_eager=True,
-    max_num_seqs=64
-)
+class BookSummary(BaseModel):
+    world: str = Field(
+        description="Описание мира, которое можно получить из этого фрагмента(<= 4 предложений)"
+    )
+    places: str = Field(
+        description="Основные места, где происходят события(перечисли через запятую)"
+    )
+    reasoning: str = Field(
+        description="Рассмотри реакции окружающих на слова и действия каждого персонажа, но не больше 4-5 предложений"
+    )
+    characters: List[Character] = Field(
+        description="Опиши каждого персонажа, который участвует в событиях во фрагменте"
+    )
 
-structured_params = StructuredOutputsParams(json=BookAnalysis.model_json_schema())
+model_name = "Qwen/Qwen3-4B-AWQ"
 
-sampling_params = SamplingParams(
-    temperature=0.2,
-    max_tokens=1536,
-    structured_outputs=structured_params
-)
+if __name__ == '__main__':
+    llm = LLM(
+        model=model_name,
+        max_model_len=8192,
+        gpu_memory_utilization=0.9,
+        enable_prefix_caching=True,
+        max_num_seqs=16
+    )
 
-CHECKPOINT_DIR = "checkpoints"
-os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    os.makedirs("checkpoints", exist_ok=True)
 
-def safe_json_loads(text: str) -> dict:
-    text_clean = text.strip()
-    if text_clean.startswith("```"):
-        text_clean = text_clean.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-    try:
-        return json.loads(text_clean)
-    except Exception:
-        repaired = repair_json(text_clean)
-        return json.loads(repaired)
+    structured_outputs = StructuredOutputsParams(json=BookSummary.model_json_schema())
 
-def process_books_batch(batch_rows: list[pd.Series], chunk_size: int = 7000, merge_batch_size: int = 4):
-    valid_books = []
-    for row in batch_rows:
-        flibusta_id = str(row['flibusta_id'])
-        checkpoint_path = os.path.join(CHECKPOINT_DIR, f"{flibusta_id}.json")
-        
-        if os.path.exists(checkpoint_path):
-            continue 
-        
-        try:
-            text = load_book_text(f"data/{row['archive']}/{row['flibusta_id']}.fb2")
-            if not text or len(text) < 100:
-                continue
-            valid_books.append((flibusta_id, row, text))
-        except Exception as e:
-            print(f"[ERROR] Не удалось прочитать книгу {flibusta_id}: {e}")
-            continue
+    sampling_params = SamplingParams(
+        temperature=0.2,
+        max_tokens=2048,
+        structured_outputs=structured_outputs
+    )
 
-    if not valid_books:
-        return
+    batch_size = 4
 
-    all_level1_prompts = []
-    prompt_book_map = []
+    data_df = get_data_df().sample(frac=1).reset_index(drop=True)
 
-    for flibusta_id, row, text in valid_books:
-        chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
-        for c in chunks:
-            prompt = (
-                "Ты аналитик текстов для обучения семантического поиска. Сделай подробный разбор фрагмента.\n"
-                "КРИТИЧЕСКИЕ ПРАВИЛА ОБЕЗЛИЧИВАНИЯ (ОБЯЗАТЕЛЬНО К ИСПОЛНЕНИЮ):\n"
-                "1. СТРОГО ЗАПРЕЩЕНО ИСПОЛЬЗОВАТЬ ЛЮБЫЕ ИМЕНА И СОБСТВЕННЫЕ НАЗВАНИЯ во всех полях! Заменяй их обобщенными понятиями (например: 'главный герой', 'его соратник', 'столица империи', 'сопредельное государство', 'космический корабль').\n"
-                "2. Пиши ИСКЛЮЧИТЕЛЬНО на русском языке.\n"
-                "3. Каждое текстовое поле должно быть максимально подробным (НЕ МЕНЕЕ 4-5 ПОЛНОЦЕННЫХ ПРЕДЛОЖЕНИЙ).\n\n"
-                f"Фрагмент:\n{c}"
-            )
-            all_level1_prompts.append(prompt)
-            prompt_book_map.append(flibusta_id)
+    chunk_size = 4096
+    chunk_overlap = 50
 
-    print(f"--> Генерация 1-го уровня: {len(all_level1_prompts)} чанков для {len(valid_books)} книг...")
-    
-    outputs = llm.generate(all_level1_prompts, sampling_params)
+    text_splitter = TokenTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
-    book_jsons = {f_id: [] for f_id, _, _ in valid_books}
-    for out, f_id in zip(outputs, prompt_book_map):
-        parsed = safe_json_loads(out.outputs[0].text)
-        book_jsons[f_id].append(parsed)
-
-    for flibusta_id, row, _ in valid_books:
-        current_jsons = book_jsons[flibusta_id]
-        count = 0
-        
-        while len(current_jsons) > 1 and count < 5:
-            batches = [
-                current_jsons[i:i + merge_batch_size]
-                for i in range(0, len(current_jsons), merge_batch_size)
+    for i in range(0, len(data_df), batch_size):
+        sample_data = data_df.iloc[i: i + batch_size, :].reset_index(drop=True)
+        conversations = []
+        books = [] # [book_id, book_size_in_chunks]
+        for j in range(0, len(sample_data)):
+            text = load_book_text(f"data/{sample_data.loc[j, 'archive']}/{sample_data.loc[j, 'file_number']}.fb2")
+            text_split = text_splitter.split_text(text)
+            books.append([sample_data.loc[j, "flibusta_id"], len(text_split)])
+            conversations_i = [
+                [{
+                    "role": "system",
+                    "content": "Ты - литературный критик, выдели из фрагмента информацию которую из него можно получить. тщательно анализируй поведение героев при определении характера. если персонажей можно отнести к массовке не описывай их, или объедини в одну группу. для меня очень важно находить героев, действий которых никто не ожидал и которые шокируют всех"
+                },
+                {
+                    "role": "user",
+                    "content": f"Проанализируй следующий фрагмент: \n\n{text_split[k]}"
+                }] for k in range(len(text_split))
             ]
+            conversations += conversations_i
 
-            merge_prompts = [
-                "Объедини несколько JSON-суммаризаций фрагментов книги в один единый детальный JSON.\n"
-                "КРИТИЧЕСКИЕ ПРАВИЛА ОБЕЗЛИЧИВАНИЯ:\n"
-                "1. СТРОГО ЗАПРЕЩЕНО указывать любые имена персонажей, названия городов, локаций, фракций, организаций или стран.\n"
-                "2. Заменяй любые встреченные имена и названия на общие категории ('главная героиня', 'магический орден', 'древний город').\n"
-                "3. Пиши ИСКЛЮЧИТЕЛЬНО на русском языке и сохраняй максимальную детализацию контекста.\n\n"
-                f"Входные данные:\n{json.dumps(b, ensure_ascii=False)}"
-                for b in batches
-            ]
+        output = llm.chat(
+            messages=conversations,
+            sampling_params=sampling_params
+        )
 
-            outputs = llm.generate(merge_prompts, sampling_params)
-            current_jsons = [safe_json_loads(out.outputs[0].text) for out in outputs]
-            count += 1
-
-        result_payload = {
-            "flibusta_id": flibusta_id,
-            "title": str(row.get('name', '')),
-            "author": str(row.get('author', '')),
-            "genre": str(row.get('genre', '')),
-            "analysis": current_jsons[0]
-        }
-
-        checkpoint_path = os.path.join(CHECKPOINT_DIR, f"{flibusta_id}.json")
-        with open(checkpoint_path, "w", encoding="utf-8") as f:
-            json.dump(result_payload, f, ensure_ascii=False, indent=2)
-
-        print(f"[OK] Чекпоинт сохранен: {checkpoint_path} ({row.get('name')})")
-
-
-if __name__ == "__main__":
-    data_df = get_data_df().sample(frac=1, random_state=42).reset_index(drop=True)
-
-    BOOK_BATCH_SIZE = 8
-
-    rows = [row for _, row in data_df.iterrows()]
-
-    for i in range(0, len(rows), BOOK_BATCH_SIZE):
-        batch = rows[i:i + BOOK_BATCH_SIZE]
-        process_books_batch(batch)
+        while len(books):
+            conversations = []
+            p = 0
+            books_1 = []
+            for j in range(len(books)):
+                if books[j][1] == 1:
+                    with open(f"checkpoints/{books[j][0]}.json", mode="w", encoding="utf-8") as f:
+                        f.write(output[p].outputs[0].text)
+                    p += 1
+                else:
+                    text_i = ""
+                    b_1, b_2 = books[j][0], 0
+                    for k in range(books[j][1]):
+                        if len(text_i + output[p].outputs[0].text) < chunk_size:
+                            text_i += output[p].outputs[0].text
+                        else:
+                            conversation_i = [
+                                {
+                                    "role": "system",
+                                    "content": "Ты - литературный критик, я обработал разные отрывки книги и получил из них суммаризации с такими же полями как дал тебе. для меня очень важно находить героев, действий которых никто не ожидал и которые шокируют всех"
+                                },
+                                {
+                                    "role": "user",
+                                    "content": f"Проанализируй следующие суммаризации: \n\n {text_i}"
+                                }
+                            ]
+                            text_i = output[p].outputs[0].text
+                            conversations.append(conversation_i)
+                            b_2 += 1
+                        p += 1
+                    if len(text_i) > 0:
+                        conversation_i = [
+                            {
+                                "role": "system",
+                                "content": "Ты - литературный критик, я обработал разные отрывки книги и получил из них суммаризации с такими же полями как дал тебе. для меня очень важно находить героев, действий которых никто не ожидал и которые шокируют всех"
+                            },
+                            {
+                                "role": "user",
+                                "content": f"Проанализируй следующие суммаризации: \n\n {text_i}"
+                            }
+                        ]
+                        conversations.append(conversation_i)
+                        b_2 += 1
+                    books_1.append([b_1, b_2])
+            if conversations:
+                output = llm.chat(
+                    messages=conversations,
+                    sampling_params=sampling_params
+                )
+            books = books_1
